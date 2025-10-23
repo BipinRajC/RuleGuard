@@ -3,6 +3,7 @@ package utils
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -15,8 +16,9 @@ func ExecuteScript(client *ssh.Client, scriptPath string, args ...string) (strin
 		return "", fmt.Errorf("failed to read script: %w", err)
 	}
 
-	// Generate remote path
-	remoteScriptPath := fmt.Sprintf("/tmp/%s", scriptPath)
+	// Generate remote path (just the filename)
+	scriptName := filepath.Base(scriptPath)
+	remoteScriptPath := fmt.Sprintf("/tmp/%s", scriptName)
 
 	// Upload script
 	uploadCmd := fmt.Sprintf("cat > %s << 'EOF'\n%s\nEOF\nchmod +x %s",

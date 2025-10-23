@@ -4,7 +4,7 @@
 
 set -e
 
-echo "⏳ Installing OpenSCAP..."
+echo "⏳ Installing OpenSCAP"
 
 # Detect OS
 if [ ! -f /etc/os-release ]; then

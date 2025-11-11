@@ -11,3 +11,6 @@ test_backend
 
 # Go
 go.sum
+.env
+*.log
+compliance-monitor

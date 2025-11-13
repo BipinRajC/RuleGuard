@@ -1,0 +1,31 @@
+# Binaries
+oscap-service
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Environment
+.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Reports (local testing)
+openscap-reports/
+
+# Build artifacts
+dist/
+build/

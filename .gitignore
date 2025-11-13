@@ -1,16 +1,11 @@
-# Binaries
+# Binaries only
 *.exe
-*.dll
-*.so
-*.dylib
 test-backend
 test_backend
-
-# Test files
-*.test
-
-# Go
-go.sum
-.env
-*.log
 compliance-monitor
+
+# Environment secrets
+.env
+
+# Logs
+*.log

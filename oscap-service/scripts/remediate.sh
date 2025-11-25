@@ -1,15 +1,20 @@
 #!/bin/bash
 # OpenSCAP Remediation Script - Backend Automation
 # Optimized for: Ubuntu 22.04 LTS (primary), Ubuntu 18.04+
-# Non-interactive, returns structured output for API parsing
-# Usage: remediate.sh <rule_id1> [rule_id2] ...
+# Non-interactive, returns structured output for scaprun parsing
+# Usage: PROFILE=xxx RULE_IDS=rule1,rule2 remediate.sh
+#    or: remediate.sh <rule_id1> [rule_id2] ...
 
 set -e
 
-# Check for rule IDs
-if [ $# -eq 0 ]; then
+# Get rule IDs from args or RULE_IDS env var
+if [ $# -gt 0 ]; then
+    RULE_ARGS="$@"
+elif [ -n "$RULE_IDS" ]; then
+    RULE_ARGS=$(echo "$RULE_IDS" | tr ',' ' ')
+else
     echo "ERROR:No rules specified"
-    echo "USAGE:remediate.sh <rule_id1> [rule_id2] ..."
+    echo "USAGE:PROFILE=xxx RULE_IDS=rule1,rule2 remediate.sh"
     exit 1
 fi
 
@@ -56,13 +61,14 @@ if ! command -v oscap &> /dev/null; then
     exit 1
 fi
 
-PROFILE="xccdf_org.ssgproject.content_profile_standard"
+# Profile from env var or default to standard
+PROFILE="${PROFILE:-xccdf_org.ssgproject.content_profile_standard}"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 
 # Output remediation start information
 echo "REMEDIATION_START"
 echo "TIMESTAMP:$TIMESTAMP"
-echo "RULES_COUNT:$#"
+echo "PROFILE:$PROFILE"
 echo "OS_VERSION:$OS_VERSION"
 echo "CONTENT:$CONTENT"
 
@@ -70,7 +76,7 @@ FIXED=0
 FAILED=0
 
 # Process each rule
-for RULE_SHORT in "$@"; do
+for RULE_SHORT in $RULE_ARGS; do
     # Add OpenSCAP rule prefix
     RULE_ID="xccdf_org.ssgproject.content_rule_${RULE_SHORT}"
     TEMP_DIR="/tmp/rem_${RULE_SHORT}_${TIMESTAMP}"
@@ -120,9 +126,8 @@ done
 
 # Output summary
 echo "REMEDIATION_COMPLETE"
-echo "FIXED:$FIXED"
-echo "FAILED:$FAILED"
-echo "SUCCESS_RATE:$(awk "BEGIN {printf \"%.2f\", ($FIXED / $#) * 100}")"
+echo "TOTAL_FIXED:$FIXED"
+echo "TOTAL_FAILED:$FAILED"
 
 # Exit with success if at least some rules were fixed
 if [ "$FIXED" -gt 0 ]; then

@@ -7,3 +7,4 @@ oscap-service
 # Logs
 *.log
 logs/
+scaprun

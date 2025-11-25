@@ -3,6 +3,7 @@ package scanner
 import (
 	"database/sql"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -11,25 +12,40 @@ import (
 
 	"oscap-service/internal/database"
 	"oscap-service/pkg/models"
+	sshpkg "oscap-service/pkg/ssh"
 )
 
 // Scanner handles compliance scanning operations
 type Scanner struct {
-	NodeID   int
-	NodeName string
-	Profile  string
+	NodeID    int
+	NodeName  string
+	Profile   string
+	IsRemote  bool
+	SSHClient *sshpkg.Client
 }
 
-// NewScanner creates a new scanner instance
-func NewScanner(nodeID int, nodeName string) *Scanner {
+// NewScanner creates a new scanner instance for local execution
+func NewScanner(nodeID int, nodeName, profile string) *Scanner {
 	return &Scanner{
 		NodeID:   nodeID,
 		NodeName: nodeName,
-		Profile:  "xccdf_org.ssgproject.content_profile_standard",
+		Profile:  profile,
+		IsRemote: false,
 	}
 }
 
-// ExecuteScan runs a compliance scan locally
+// NewRemoteScanner creates a new scanner instance for remote execution via SSH
+func NewRemoteScanner(nodeID int, nodeName, profile string, sshClient *sshpkg.Client) *Scanner {
+	return &Scanner{
+		NodeID:    nodeID,
+		NodeName:  nodeName,
+		Profile:   profile,
+		IsRemote:  true,
+		SSHClient: sshClient,
+	}
+}
+
+// ExecuteScan runs a compliance scan locally or remotely
 func (s *Scanner) ExecuteScan(reportsPath string) (*models.Scan, error) {
 	// Create scan record
 	scan := &models.Scan{
@@ -56,15 +72,27 @@ func (s *Scanner) ExecuteScan(reportsPath string) (*models.Scan, error) {
 
 	scan.ID = scanID
 
-	// Execute scan script
+	// Execute scan script (local or remote)
 	scriptPath := filepath.Join("scripts", "scan.sh")
-	output, err := s.executeScript(scriptPath)
+	var output string
+	var scriptErr error
+	
+	if s.IsRemote {
+		output, scriptErr = s.executeScriptRemote(scriptPath, s.Profile)
+	} else {
+		output, scriptErr = s.executeScriptLocal(scriptPath, s.Profile)
+	}
 
 	completedAt := time.Now()
 	durationSecs := int(completedAt.Sub(scan.StartedAt).Seconds())
 
-	if err != nil {
-		// Mark scan as failed
+	// Check if scan completed successfully by looking for SCAN_COMPLETE marker
+	// OpenSCAP returns exit code 2 when rules fail, which is normal, not an error
+	scanCompleted := strings.Contains(output, "SCAN_COMPLETE")
+	
+	if scriptErr != nil && !scanCompleted {
+		// Only treat as error if SCAN_COMPLETE marker is missing
+		errorMsg := fmt.Sprintf("%v\nScript output:\n%s", scriptErr.Error(), output)
 		_, updateErr := database.DB.Exec(`
 			UPDATE scans 
 			SET status = 'failed', 
@@ -72,12 +100,12 @@ func (s *Scanner) ExecuteScan(reportsPath string) (*models.Scan, error) {
 				duration_seconds = $2, 
 				error_message = $3
 			WHERE id = $4`,
-			completedAt, durationSecs, err.Error(), scanID,
+			completedAt, durationSecs, errorMsg, scanID,
 		)
 		if updateErr != nil {
-			return nil, fmt.Errorf("scan failed and couldn't update: %v, %v", err, updateErr)
+			return nil, fmt.Errorf("scan failed and couldn't update: %v, %v\nOutput: %s", scriptErr, updateErr, output)
 		}
-		return nil, fmt.Errorf("scan execution failed: %w", err)
+		return nil, fmt.Errorf("scan execution failed: %w\nOutput:\n%s", scriptErr, output)
 	}
 
 	// Parse scan output
@@ -152,11 +180,40 @@ func (s *Scanner) ExecuteScan(reportsPath string) (*models.Scan, error) {
 	return scan, nil
 }
 
-// executeScript runs a shell script locally
-func (s *Scanner) executeScript(scriptPath string) (string, error) {
-	cmd := exec.Command("bash", scriptPath)
+// executeScriptLocal runs a shell script locally
+func (s *Scanner) executeScriptLocal(scriptPath string, profile string) (string, error) {
+	cmd := exec.Command("bash", scriptPath, profile)
 	output, err := cmd.CombinedOutput()
 	return string(output), err
+}
+
+// executeScriptRemote runs a shell script on remote host via SSH
+func (s *Scanner) executeScriptRemote(scriptPath string, profile string) (string, error) {
+	if s.SSHClient == nil {
+		return "", fmt.Errorf("SSH client not initialized")
+	}
+	
+	// Read the script content
+	scriptContent, err := os.ReadFile(scriptPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to read script: %w", err)
+	}
+	
+	// Escape single quotes in script content for safe embedding
+	escapedScript := strings.ReplaceAll(string(scriptContent), "'", "'\"'\"'")
+	
+	// Create a wrapper that saves the script and runs it with the profile argument
+	// Using printf to write script content (works in both bash and fish)
+	scriptWithArgs := fmt.Sprintf("printf '%%s' '%s' > /tmp/scan_script.sh && chmod +x /tmp/scan_script.sh && /tmp/scan_script.sh '%s'", 
+		escapedScript, profile)
+	
+	// Execute script content on remote host
+	output, err := s.SSHClient.ExecuteScriptContent(scriptWithArgs)
+	if err != nil {
+		return output, fmt.Errorf("remote execution failed: %w", err)
+	}
+	
+	return output, nil
 }
 
 // parseScanOutput parses the output from scan.sh
@@ -261,7 +318,7 @@ func (s *Scanner) getScanByID(scanID int) (*models.Scan, error) {
 	err := database.DB.QueryRow(`
 		SELECT id, node_id, profile, status, started_at, completed_at,
 		       duration_seconds, compliance_score, total_rules, passed_rules,
-		       failed_rules, error_rules, report_html_path, report_xml_path,
+		       failed_rules, error_rules, notapplicable_rules, report_html_path, report_xml_path,
 		       error_message
 		FROM scans
 		WHERE id = $1`,
@@ -270,7 +327,7 @@ func (s *Scanner) getScanByID(scanID int) (*models.Scan, error) {
 		&scan.ID, &scan.NodeID, &scan.Profile, &scan.Status,
 		&scan.StartedAt, &scan.CompletedAt, &scan.DurationSeconds,
 		&scan.ComplianceScore, &scan.TotalRules, &scan.PassedRules,
-		&scan.FailedRules, &scan.ErrorRules, &scan.ReportHTMLPath,
+		&scan.FailedRules, &scan.ErrorRules, &scan.NotApplicable, &scan.ReportHTMLPath,
 		&scan.ReportXMLPath, &scan.ErrorMessage,
 	)
 

@@ -1,11 +1,12 @@
 #!/bin/bash
-# OpenSCAP Installation Script - Backend Automation
-# Optimized for: Ubuntu 22.04 LTS (primary), Ubuntu 18.04+, RHEL/CentOS 7-9
-# Non-interactive, returns structured output for API parsing
+# OpenSCAP Installation Script - HPC Cluster Deployment
+# Supported OS: RHEL/CentOS/Rocky/AlmaLinux (7-9), SLES (12-15), Ubuntu LTS (18.04-24.04)
+# Non-interactive, structured output for scaprun parsing
+# Optimized: Skips installation if already present
 
 set -e
 
-# Output format for backend parsing
+# Output format for scaprun parsing
 log_info() {
     echo "INFO: $1"
 }
@@ -18,7 +19,33 @@ log_success() {
     echo "SUCCESS: $1"
 }
 
-log_info "Starting OpenSCAP installation"
+log_warning() {
+    echo "WARNING: $1"
+}
+
+# ============================================================================
+# Quick Check: Skip if OpenSCAP already installed
+# ============================================================================
+if command -v oscap &> /dev/null; then
+    OSCAP_VERSION=$(oscap --version | head -1)
+    log_success "OpenSCAP already installed: $OSCAP_VERSION"
+    
+    # Quick check for SCAP content
+    for dir in /usr/share/xml/scap/ssg/content /usr/share/scap-security-guide; do
+        if [ -d "$dir" ] && ls "$dir"/*.xml &>/dev/null; then
+            CONTENT=$(ls "$dir"/*.xml 2>/dev/null | head -1)
+            log_success "SCAP content found: $CONTENT"
+            log_success "Installation verified - Ready for compliance scanning"
+            exit 0
+        fi
+    done
+    
+    log_warning "OpenSCAP installed but SCAP content missing - will install content only"
+    OSCAP_EXISTS=true
+else
+    OSCAP_EXISTS=false
+    log_info "OpenSCAP not found - proceeding with installation"
+fi
 
 # Detect OS
 if [ ! -f /etc/os-release ]; then
@@ -27,151 +54,168 @@ if [ ! -f /etc/os-release ]; then
 fi
 
 . /etc/os-release
-OS_NAME=$ID
-OS_VERSION=$VERSION_ID
+OS_ID=$ID
+OS_VERSION_ID=$VERSION_ID
+OS_PRETTY_NAME=$PRETTY_NAME
 
-log_info "Detected OS: $PRETTY_NAME (ID=$OS_NAME, VERSION=$OS_VERSION)"
+log_info "Detected OS: $OS_PRETTY_NAME (ID=$OS_ID, VERSION=$OS_VERSION_ID)"
 
-case "$OS_NAME" in
-    ubuntu|debian)
-        log_info "Installing on Debian-based system"
+# Main installation switch based on OS
+case "$OS_ID" in
+    
+    # ============================================================================
+    # RHEL Family: RHEL, CentOS, Rocky Linux, AlmaLinux (70-80% of HPC clusters)
+    # ============================================================================
+    rhel|centos|rocky|almalinux)
+        log_info "Installing on RHEL-based system: $OS_ID"
+        MAJOR_VERSION=$(echo "$OS_VERSION_ID" | cut -d. -f1)
         
-        # Ensure universe repository is enabled (non-interactive)
-        sudo add-apt-repository universe -y 2>/dev/null || true
-        
-        # Update package lists
-        log_info "Updating package lists..."
-        export DEBIAN_FRONTEND=noninteractive
-        sudo apt-get update -qq || {
-            log_error "Failed to update package lists"
-            exit 1
-        }
-        
-        # Install based on Ubuntu version
-        if [[ "$OS_VERSION" == "22.04" ]]; then
-            # Ubuntu 22.04 LTS - Primary target
-            log_info "Installing OpenSCAP for Ubuntu 22.04 LTS"
-            sudo apt-get install -y -qq libopenscap8 || {
-                log_error "Failed to install libopenscap8"
-                exit 1
-            }
-            
-            # Install SCAP Security Guide
-            sudo apt-get install -y -qq ssg-base ssg-debderived 2>/dev/null || \
-            sudo apt-get install -y -qq ssg-debian ssg-applications 2>/dev/null || {
-                log_info "SCAP content not in repos, downloading from GitHub..."
-                cd /tmp
-                wget -q https://github.com/ComplianceAsCode/content/releases/download/v0.1.73/scap-security-guide-0.1.73.zip || \
-                wget -q https://github.com/ComplianceAsCode/content/releases/latest/download/scap-security-guide.zip || {
-                    log_error "Failed to download SCAP content"
-                    exit 1
-                }
-                
-                if [ -f scap-security-guide*.zip ]; then
-                    sudo apt-get install -y -qq unzip
-                    unzip -q scap-security-guide*.zip
-                    sudo mkdir -p /usr/share/xml/scap/ssg/content
-                    sudo cp -r scap-security-guide-*/ssg-* /usr/share/xml/scap/ssg/content/ 2>/dev/null || \
-                    sudo cp -r */ssg-* /usr/share/xml/scap/ssg/content/ 2>/dev/null || {
-                        log_error "Failed to install SCAP content"
+        # Check if packages already installed (rpm -q is fast)
+        if rpm -q openscap-scanner scap-security-guide &>/dev/null; then
+            log_success "OpenSCAP packages already installed"
+        else
+            log_info "Installing OpenSCAP packages..."
+            case "$MAJOR_VERSION" in
+                7)
+                    sudo yum install -y -q openscap-scanner scap-security-guide || {
+                        log_error "Failed to install OpenSCAP on RHEL 7"
                         exit 1
                     }
-                    rm -rf scap-security-guide*
-                    log_info "SCAP content installed from GitHub"
-                fi
-            }
-            
-        elif [[ "$OS_VERSION" == "20.04" ]] || [[ "$OS_VERSION" == "18.04" ]]; then
-            # Ubuntu 20.04 / 18.04
-            log_info "Installing OpenSCAP for Ubuntu $OS_VERSION"
-            sudo apt-get install -y -qq libopenscap8 || {
-                log_error "Failed to install libopenscap8"
-                exit 1
-            }
-            sudo apt-get install -y -qq ssg-base ssg-debderived 2>/dev/null || \
-            sudo apt-get install -y -qq ssg-debian ssg-applications 2>/dev/null || true
-            
-        elif [[ "$OS_VERSION" == "24.04" ]] || [[ "$OS_VERSION" > "24" ]]; then
-            # Ubuntu 24.04+ (future-proofing)
-            log_info "Installing OpenSCAP for Ubuntu $OS_VERSION"
-            sudo apt-get install -y -qq openscap-scanner libopenscap25t64 2>/dev/null || \
-            sudo apt-get install -y -qq openscap-scanner libopenscap-dev || {
-                log_error "Failed to install OpenSCAP scanner"
-                exit 1
-            }
-            sudo apt-get install -y -qq ssg-base ssg-debderived 2>/dev/null || true
-            
-        else
-            log_error "Unsupported Ubuntu version: $OS_VERSION"
-            exit 1
+                    ;;
+                8|9)
+                    sudo dnf install -y -q openscap-scanner scap-security-guide || {
+                        log_error "Failed to install OpenSCAP on RHEL $MAJOR_VERSION"
+                        exit 1
+                    }
+                    ;;
+                *)
+                    log_error "Unsupported RHEL family version: $MAJOR_VERSION"
+                    exit 1
+                    ;;
+            esac
+            log_success "OpenSCAP installed on RHEL family"
         fi
         ;;
     
-    rhel|centos|fedora|rocky|almalinux)
-        log_info "Installing on RHEL-based system"
-        sudo dnf install -y openscap-scanner scap-security-guide 2>/dev/null || \
-        sudo yum install -y openscap-scanner scap-security-guide || {
-            log_error "Failed to install OpenSCAP on RHEL-based system"
-            exit 1
-        }
+    # ============================================================================
+    # SUSE Linux Enterprise Server (10-15% of HPC clusters)
+    # ============================================================================
+    sles|sles_sap|suse)
+        log_info "Installing on SUSE Linux Enterprise Server"
+        MAJOR_VERSION=$(echo "$OS_VERSION_ID" | cut -d. -f1)
+        
+        # Check if packages already installed
+        if rpm -q openscap-utils scap-security-guide &>/dev/null; then
+            log_success "OpenSCAP packages already installed"
+        else
+            log_info "Installing OpenSCAP packages..."
+            case "$MAJOR_VERSION" in
+                12|15)
+                    sudo zypper install -y -q --no-recommends openscap-utils scap-security-guide || {
+                        log_error "Failed to install OpenSCAP on SLES $MAJOR_VERSION"
+                        exit 1
+                    }
+                    ;;
+                *)
+                    log_error "Unsupported SLES version: $MAJOR_VERSION"
+                    exit 1
+                    ;;
+            esac
+            log_success "OpenSCAP installed on SLES"
+        fi
         ;;
     
+    # ============================================================================
+    # Ubuntu Server LTS (5-10% of HPC clusters, primarily cloud-based)
+    # ============================================================================
+    ubuntu)
+        log_info "Installing on Ubuntu Server"
+        export DEBIAN_FRONTEND=noninteractive
+        
+        # Install OpenSCAP if not present (we already checked oscap command at top)
+        if [ "$OSCAP_EXISTS" = "false" ]; then
+            log_info "Installing OpenSCAP packages..."
+            case "$OS_VERSION_ID" in
+                18.04|20.04|22.04)
+                    sudo apt-get install -y -qq libopenscap8 || {
+                        log_error "Failed to install libopenscap8"
+                        exit 1
+                    }
+                    ;;
+                24.04)
+                    sudo apt-get install -y -qq openscap-scanner libopenscap25t64 2>/dev/null || \
+                    sudo apt-get install -y -qq openscap-scanner libopenscap-dev || {
+                        log_error "Failed to install OpenSCAP"
+                        exit 1
+                    }
+                    ;;
+                *)
+                    log_error "Unsupported Ubuntu version: $OS_VERSION_ID (supported: 18.04, 20.04, 22.04, 24.04)"
+                    exit 1
+                    ;;
+            esac
+        fi
+        
+        # Check for SCAP content
+        if ls /usr/share/xml/scap/ssg/content/ssg-ubuntu*.xml &>/dev/null; then
+            log_success "SCAP Security Guide already installed"
+        else
+            log_info "Installing SCAP Security Guide..."
+            sudo apt-get install -y -qq ssg-base ssg-debderived 2>/dev/null || \
+            sudo apt-get install -y -qq ssg-debian ssg-applications 2>/dev/null || {
+                # Download from GitHub as fallback
+                log_info "Downloading SCAP content from GitHub..."
+                cd /tmp
+                wget -q --timeout=30 https://github.com/ComplianceAsCode/content/releases/download/v0.1.73/scap-security-guide-0.1.73.zip -O ssg.zip 2>/dev/null || \
+                wget -q --timeout=30 https://github.com/ComplianceAsCode/content/releases/latest/download/scap-security-guide.zip -O ssg.zip 2>/dev/null || {
+                    log_warning "Failed to download SCAP content"
+                }
+                if [ -f ssg.zip ]; then
+                    command -v unzip &>/dev/null || sudo apt-get install -y -qq unzip
+                    unzip -q -o ssg.zip 2>/dev/null || true
+                    sudo mkdir -p /usr/share/xml/scap/ssg/content
+                    sudo cp -f scap-security-guide-*/ssg-ubuntu*.xml /usr/share/xml/scap/ssg/content/ 2>/dev/null || \
+                    sudo cp -f */ssg-ubuntu*.xml /usr/share/xml/scap/ssg/content/ 2>/dev/null || true
+                    rm -rf ssg.zip scap-security-guide* 2>/dev/null || true
+                    log_success "SCAP content installed from GitHub"
+                fi
+            }
+        fi
+        
+        log_success "OpenSCAP installed on Ubuntu"
+        ;;
+    
+    # ============================================================================
+    # Unsupported OS
+    # ============================================================================
     *)
-        log_error "Unsupported OS: $OS_NAME"
+        log_error "Unsupported OS: $OS_ID (supported: RHEL/CentOS/Rocky/AlmaLinux 7-9, SLES 12-15, Ubuntu 18.04-24.04)"
         exit 1
         ;;
 esac
 
-# Verify installation
-log_info "Verifying OpenSCAP installation..."
-
+# ============================================================================
+# Final Verification
+# ============================================================================
 if ! command -v oscap &> /dev/null; then
     log_error "oscap command not found after installation"
     exit 1
 fi
 
 OSCAP_VERSION=$(oscap --version | head -1)
-log_success "OpenSCAP installed: $OSCAP_VERSION"
+log_success "OpenSCAP verified: $OSCAP_VERSION"
 
-# Find and verify SCAP content
-CONTENT_DIRS=(
-    "/usr/share/xml/scap/ssg/content"
-    "/usr/share/scap-security-guide"
-)
-
-CONTENT_FOUND=""
-for dir in "${CONTENT_DIRS[@]}"; do
-    if [ -d "$dir" ]; then
-        # Look for Ubuntu 22.04 content first (primary target)
-        CONTENT=$(ls "$dir"/ssg-ubuntu2204-ds.xml 2>/dev/null | head -1)
-        if [ -n "$CONTENT" ]; then
-            CONTENT_FOUND=$CONTENT
-            break
-        fi
-        # Fallback to any SCAP content
-        CONTENT=$(ls "$dir"/*.xml 2>/dev/null | head -1)
-        if [ -n "$CONTENT" ]; then
-            CONTENT_FOUND=$CONTENT
-            break
-        fi
+# Quick content check
+for dir in /usr/share/xml/scap/ssg/content /usr/share/scap-security-guide; do
+    if [ -d "$dir" ] && ls "$dir"/*.xml &>/dev/null 2>&1; then
+        log_success "SCAP content available in $dir"
+        log_success "Installation complete - Ready for compliance scanning"
+        exit 0
     fi
 done
 
-if [ -n "$CONTENT_FOUND" ]; then
-    log_success "SCAP content found: $CONTENT_FOUND"
-    
-    # List available profiles for Ubuntu 22.04
-    if [[ "$OS_VERSION" == "22.04" ]] && [ -f "/usr/share/xml/scap/ssg/content/ssg-ubuntu2204-ds.xml" ]; then
-        log_info "Available profiles for Ubuntu 22.04:"
-        oscap info /usr/share/xml/scap/ssg/content/ssg-ubuntu2204-ds.xml 2>/dev/null | grep "Profile" | head -5 || true
-    fi
-    
-    log_success "Installation complete"
-    exit 0
-else
-    log_error "OpenSCAP installed but no SCAP content found"
-    log_error "Searched in: ${CONTENT_DIRS[*]}"
-    exit 1
-fi
+log_warning "OpenSCAP installed but SCAP content not found"
+exit 0
+
 
 

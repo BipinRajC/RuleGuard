@@ -110,16 +110,20 @@ type RemediationAction struct {
 type Checkpoint struct {
 	ID               int        `json:"id"`
 	NodeID           int        `json:"node_id"`
+	Hostname         string     `json:"hostname"`
 	ScanID           *int       `json:"scan_id,omitempty"`
-	CheckpointType   string     `json:"checkpoint_type"`
+	Name             string     `json:"name"`
 	Description      string     `json:"description"`
+	CheckpointType   string     `json:"checkpoint_type"`
 	ComplianceScore  *float64   `json:"compliance_score,omitempty"`
+	TotalFailures    *int       `json:"total_failures,omitempty"`
 	CriticalFailures *int       `json:"critical_failures,omitempty"`
-	FilesCount       int        `json:"files_count"`
-	PackagesCount    int        `json:"packages_count"`
-	ServicesCount    int        `json:"services_count"`
+	FilesCount       *int       `json:"files_count,omitempty"`
+	PackagesCount    *int       `json:"packages_count,omitempty"`
+	ServicesCount    *int       `json:"services_count,omitempty"`
+	IsActive         bool       `json:"is_active"`
 	CreatedAt        time.Time  `json:"created_at"`
-	CreatedBy        string     `json:"created_by"`
+	CreatedBy        string     `json:"created_by,omitempty"`
 }
 
 // CheckpointFile represents a backed up file

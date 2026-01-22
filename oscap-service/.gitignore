@@ -1,5 +1,6 @@
 # Binary
 oscap-service
+/scaprun
 
 # Environment secrets
 .env
@@ -7,4 +8,3 @@ oscap-service
 # Logs
 *.log
 logs/
-scaprun

@@ -1,121 +1,148 @@
-# ScapRun - OpenSCAP Compliance Management Tool
+# HPE ScapRun - OpenSCAP Compliance Framework
 
-A centralized TUI-based tool for managing OpenSCAP compliance scanning and remediation across HPC cluster nodes via SSH.
+Enterprise-grade TUI tool for OpenSCAP compliance scanning, remediation, and rollback across Linux nodes.
 
-## Features
+## Quick Setup
 
-- 🔍 **Remote Scanning** - Run compliance scans on remote nodes via SSH
-- 📋 **Dynamic Profile Selection** - Auto-detect available SCAP profiles from target systems
-- 🔧 **Interactive Remediation** - Select and remediate failed rules with confirmation
-- 💾 **Checkpoint System** - Automatic backups before remediation for safe rollback
-- 🔄 **Rollback Support** - Restore system state from checkpoints
-- 🗄️ **Central Database** - PostgreSQL storage for all scan results and remediations
-- 🖥️ **TUI Interface** - Clean terminal UI for interactive operations
+### Prerequisites
+- Go 1.21+
+- PostgreSQL 14+
+- Linux (Ubuntu 20.04+ / RHEL 8+)
 
-## Supported Operating Systems
-
-| OS | Versions | Status |
-|----|----------|--------|
-| Ubuntu LTS | 18.04, 20.04, 22.04, 24.04 | ✅ Tested |
-| RHEL/Rocky/AlmaLinux | 7, 8, 9 | ✅ Supported |
-| CentOS Stream | 8, 9 | ⚠️ Limited (CPE mismatch) |
-| SLES | 12, 15 | ✅ Supported |
-
-## Quick Start
-
-### 1. Database Setup (Admin Node)
+### 1. Database Setup
 
 ```bash
-# Create database
-sudo -u postgres createdb oscap-service-db
-sudo -u postgres psql -d oscap-service-db -f openscap-service.sql
+# Install PostgreSQL
+sudo apt install postgresql postgresql-contrib   # Ubuntu/Debian
+sudo dnf install postgresql-server postgresql   # RHEL/Rocky
+
+# Start PostgreSQL
+sudo systemctl start postgresql
+sudo systemctl enable postgresql
+
+# Create database and user
+sudo -u postgres psql << EOF
+CREATE USER scaprun WITH PASSWORD 'your_secure_password';
+CREATE DATABASE scaprundb OWNER scaprun;
+GRANT ALL PRIVILEGES ON DATABASE scaprundb TO scaprun;
+EOF
+
+# Import schema
+sudo -u postgres psql -d scaprundb -f openscap-service.sql
 ```
 
 ### 2. Configure Environment
 
 ```bash
 cp .env.example .env
-# Edit .env with your database credentials
+nano .env
+```
+
+**.env file:**
+```env
+DB_HOST=localhost
+DB_PORT=5432
+DB_USER=scaprun
+DB_PASSWORD=your_secure_password
+DB_NAME=scaprundb
+DB_SSLMODE=disable
 ```
 
 ### 3. Build & Run
 
 ```bash
-go build -o scaprun ./cmd/scaprun/
+# From oscap-service directory
+go build -o scaprun ./cmd/scaprun
 ./scaprun
 ```
+
+> **Note:** You must specify `./cmd/scaprun` path - running `go build` alone won't work.
+
+---
 
 ## Usage
 
 ```
-═══════════════ MAIN MENU ═══════════════
-🎯 Target: 192.168.1.100 (SSH)
-📋 Profile: standard
-─────────────────────────────────────────
-1. Select Target (Local/SSH)
-2. Select Compliance Profile
-3. Install OpenSCAP on Target
-4. Run Compliance Scan
-5. View Status
-6. Remediate Failed Rules
-7. Rollback to Checkpoint
-8. Download Reports
-9. Exit
-═════════════════════════════════════════
+┌──────────────────────────────────────────────────────────┐
+│                   TARGET MANAGEMENT                       │
+├──────────────────────────────────────────────────────────┤
+│  [1] target       - Select Target Node                   │
+│  [2] install      - Install OpenSCAP on Target           │
+└──────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│                 COMPLIANCE OPERATIONS                     │
+├──────────────────────────────────────────────────────────┤
+│  [3] profile      - Select Compliance Profile            │
+│  [4] scan         - Run Compliance Scan                  │
+│  [5] status       - View Current Status                  │
+└──────────────────────────────────────────────────────────┘
 ```
 
 ### Workflow
+1. `target` → Select local or remote node (SSH)
+2. `install` → Auto-install OpenSCAP on target
+3. `profile` → Choose compliance profile (CIS, STIG, etc.)
+4. `scan` → Run compliance scan
+5. `remediate` → Fix failed rules (creates checkpoint)
+6. `rollback` → Restore from checkpoint if needed
 
-1. **Select Target** - Connect to remote node via SSH (password or key)
-2. **Select Profile** - Choose from detected profiles (standard, CIS, STIG)
-3. **Install OpenSCAP** - Auto-install on target if needed (skips if present)
-4. **Run Scan** - Execute compliance scan and store results
-5. **View Status** - See compliance score and rule breakdown
-6. **Remediate** - Fix failed rules (creates checkpoint first)
-7. **Rollback** - Restore from checkpoint if needed
+---
+
+## Optional: pgAdmin4 Setup
+
+```bash
+# Install pgAdmin4
+curl -fsS https://www.pgadmin.org/static/packages_pgadmin_org.pub | sudo gpg --dearmor -o /usr/share/keyrings/pgadmin.gpg
+echo "deb [signed-by=/usr/share/keyrings/pgadmin.gpg] https://ftp.postgresql.org/pub/pgadmin/pgadmin4/apt/$(lsb_release -cs) pgadmin4 main" | sudo tee /etc/apt/sources.list.d/pgadmin4.list
+sudo apt update && sudo apt install pgadmin4-web
+
+# Configure
+sudo /usr/pgadmin4/bin/setup-web.sh
+```
+
+Access at: `http://localhost/pgadmin4`
+
+---
+
+## Supported Systems
+
+| OS | Versions |
+|----|----------|
+| Ubuntu | 20.04, 22.04, 24.04 |
+| RHEL/Rocky/Alma | 8, 9, 10 |
+| SLES | 15 |
+
+---
 
 ## Project Structure
 
 ```
 oscap-service/
-├── cmd/scaprun/main.go      # TUI application entry point
+├── cmd/scaprun/         # Main TUI application
+│   ├── main.go
+│   └── style.go         # HPE themed styling
 ├── internal/
-│   ├── checkpoint/          # Checkpoint/rollback system
-│   ├── config/              # Configuration management
-│   ├── database/            # PostgreSQL client
-│   ├── remediation/         # Remediation execution
-│   └── scanner/             # Scan execution
-├── pkg/
-│   ├── models/              # Data structures
-│   └── ssh/                 # SSH client wrapper
-├── scripts/
-│   ├── install_oscap.sh     # OpenSCAP installation
-│   ├── scan.sh              # Scan execution
-│   └── remediate.sh         # Remediation execution
-└── openscap-service.sql     # Database schema
+│   ├── checkpoint/      # Backup & rollback
+│   ├── database/        # PostgreSQL client
+│   ├── remediation/     # Auto-fix logic
+│   └── scanner/         # Scan execution
+├── scripts/             # Shell scripts for nodes
+├── openscap-service.sql # Database schema
+└── .env.example         # Environment template
 ```
 
-## Database Schema
+---
 
-- `nodes` - Registered compute nodes
-- `scans` - Scan execution records
-- `scan_results` - Individual rule results
-- `checkpoints` - System state snapshots
-- `checkpoint_files` - Backed up configuration files
-- `remediations` - Remediation execution records
-- `remediation_actions` - Individual rule remediation results
+## Troubleshooting
 
-## Requirements
+| Issue | Solution |
+|-------|----------|
+| `no Go files` | Run from `oscap-service/` dir with `./cmd/scaprun` |
+| DB connection failed | Check `.env` credentials and PostgreSQL status |
+| SSH connection failed | Verify SSH key/password and target accessibility |
+| No profiles found | Run `install` first to install OpenSCAP on target |
 
-- Go 1.21+
-- PostgreSQL 12+
-- OpenSCAP 1.2+ (on target nodes)
-- SSH access to target nodes
+---
 
 ## License
-
 MIT
-
-## Author
-
-Part of the RuleGuard project

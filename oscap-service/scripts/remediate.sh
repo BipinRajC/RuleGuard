@@ -1,6 +1,6 @@
 #!/bin/bash
 # OpenSCAP Remediation Script - Backend Automation
-# Optimized for: Ubuntu 22.04 LTS (primary), Ubuntu 18.04+
+# Supported OS: RHEL/CentOS/Rocky/AlmaLinux (7-10), SLES (12-16), Ubuntu LTS (18.04-24.04)
 # Non-interactive, returns structured output for scaprun parsing
 # Usage: PROFILE=xxx RULE_IDS=rule1,rule2 remediate.sh
 #    or: remediate.sh <rule_id1> [rule_id2] ...
@@ -25,25 +25,113 @@ if [ ! -f /etc/os-release ]; then
 fi
 
 . /etc/os-release
-OS_NAME=$ID
+OS_ID=$ID
 OS_VERSION=$VERSION_ID
 
-# Determine SCAP content file based on OS version
-case "$OS_VERSION" in
-    22.04)
-        CONTENT="/usr/share/xml/scap/ssg/content/ssg-ubuntu2204-ds.xml"
+# Determine SCAP content file based on OS
+case "$OS_ID" in
+    rhel|centos|rocky|almalinux)
+        # RHEL family
+        MAJOR_VERSION=$(echo "$OS_VERSION" | cut -d. -f1)
+        case "$MAJOR_VERSION" in
+            7)
+                CONTENT="/usr/share/xml/scap/ssg/content/ssg-rhel7-ds.xml"
+                [ ! -f "$CONTENT" ] && CONTENT="/usr/share/xml/scap/ssg/content/ssg-centos7-ds.xml"
+                [ ! -f "$CONTENT" ] && CONTENT="/usr/share/scap-security-guide/ssg-rhel7-ds.xml"
+                DEFAULT_PROFILE="cis_server_l1"
+                ;;
+            8)
+                CONTENT="/usr/share/xml/scap/ssg/content/ssg-rhel8-ds.xml"
+                [ ! -f "$CONTENT" ] && CONTENT="/usr/share/xml/scap/ssg/content/ssg-centos8-ds.xml"
+                [ ! -f "$CONTENT" ] && CONTENT="/usr/share/scap-security-guide/ssg-rhel8-ds.xml"
+                DEFAULT_PROFILE="cis_server_l1"
+                ;;
+            9)
+                # For CentOS Stream 9, prefer cs9 content; for RHEL, prefer rhel9
+                if [ "$OS_ID" = "centos" ]; then
+                    CONTENT="/usr/share/xml/scap/ssg/content/ssg-cs9-ds.xml"
+                    [ ! -f "$CONTENT" ] && CONTENT="/usr/share/xml/scap/ssg/content/ssg-rhel9-ds.xml"
+                else
+                    CONTENT="/usr/share/xml/scap/ssg/content/ssg-rhel9-ds.xml"
+                    [ ! -f "$CONTENT" ] && CONTENT="/usr/share/xml/scap/ssg/content/ssg-cs9-ds.xml"
+                fi
+                [ ! -f "$CONTENT" ] && CONTENT="/usr/share/scap-security-guide/ssg-rhel9-ds.xml"
+                DEFAULT_PROFILE="cis_server_l1"
+                ;;
+            10)
+                CONTENT="/usr/share/xml/scap/ssg/content/ssg-rhel10-ds.xml"
+                [ ! -f "$CONTENT" ] && CONTENT="/usr/share/scap-security-guide/ssg-rhel10-ds.xml"
+                [ ! -f "$CONTENT" ] && CONTENT="/usr/share/xml/scap/ssg/content/ssg-rhel9-ds.xml"
+                [ ! -f "$CONTENT" ] && CONTENT="/usr/share/scap-security-guide/ssg-rhel9-ds.xml"
+                DEFAULT_PROFILE="cis_server_l1"
+                ;;
+            *)
+                echo "ERROR:No SCAP content for RHEL family version $MAJOR_VERSION"
+                exit 1
+                ;;
+        esac
         ;;
-    20.04)
-        CONTENT="/usr/share/xml/scap/ssg/content/ssg-ubuntu2004-ds.xml"
+    
+    sles|sles_sap|suse)
+        # SLES
+        MAJOR_VERSION=$(echo "$OS_VERSION" | cut -d. -f1)
+        case "$MAJOR_VERSION" in
+            12)
+                CONTENT="/usr/share/xml/scap/ssg/content/ssg-sle12-ds.xml"
+                [ ! -f "$CONTENT" ] && CONTENT="/usr/share/scap-security-guide/ssg-sle12-ds.xml"
+                DEFAULT_PROFILE="standard"
+                ;;
+            15)
+                CONTENT="/usr/share/xml/scap/ssg/content/ssg-sle15-ds.xml"
+                [ ! -f "$CONTENT" ] && CONTENT="/usr/share/scap-security-guide/ssg-sle15-ds.xml"
+                DEFAULT_PROFILE="standard"
+                ;;
+            16)
+                CONTENT="/usr/share/xml/scap/ssg/content/ssg-sle16-ds.xml"
+                [ ! -f "$CONTENT" ] && CONTENT="/usr/share/scap-security-guide/ssg-sle16-ds.xml"
+                [ ! -f "$CONTENT" ] && CONTENT="/usr/share/xml/scap/ssg/content/ssg-sle15-ds.xml"
+                [ ! -f "$CONTENT" ] && CONTENT="/usr/share/scap-security-guide/ssg-sle15-ds.xml"
+                DEFAULT_PROFILE="standard"
+                ;;
+            *)
+                echo "ERROR:No SCAP content for SLES version $MAJOR_VERSION"
+                exit 1
+                ;;
+        esac
         ;;
-    18.04)
-        CONTENT="/usr/share/xml/scap/ssg/content/ssg-ubuntu1804-ds.xml"
+    
+    ubuntu)
+        # Ubuntu
+        case "$OS_VERSION" in
+            18.04)
+                CONTENT="/usr/share/xml/scap/ssg/content/ssg-ubuntu1804-ds.xml"
+                [ ! -f "$CONTENT" ] && CONTENT="/usr/share/scap-security-guide/ssg-ubuntu1804-ds.xml"
+                DEFAULT_PROFILE="standard"
+                ;;
+            20.04)
+                CONTENT="/usr/share/xml/scap/ssg/content/ssg-ubuntu2004-ds.xml"
+                [ ! -f "$CONTENT" ] && CONTENT="/usr/share/scap-security-guide/ssg-ubuntu2004-ds.xml"
+                DEFAULT_PROFILE="standard"
+                ;;
+            22.04)
+                CONTENT="/usr/share/xml/scap/ssg/content/ssg-ubuntu2204-ds.xml"
+                [ ! -f "$CONTENT" ] && CONTENT="/usr/share/scap-security-guide/ssg-ubuntu2204-ds.xml"
+                DEFAULT_PROFILE="standard"
+                ;;
+            24.04)
+                CONTENT="/usr/share/xml/scap/ssg/content/ssg-ubuntu2204-ds.xml"
+                [ ! -f "$CONTENT" ] && CONTENT="/usr/share/scap-security-guide/ssg-ubuntu2204-ds.xml"
+                DEFAULT_PROFILE="standard"
+                ;;
+            *)
+                echo "ERROR:No SCAP content for Ubuntu version $OS_VERSION"
+                exit 1
+                ;;
+        esac
         ;;
-    24.04)
-        CONTENT="/usr/share/xml/scap/ssg/content/ssg-ubuntu2204-ds.xml"
-        ;;
+    
     *)
-        echo "ERROR:No SCAP content for OS version $OS_VERSION"
+        echo "ERROR:Unsupported OS: $OS_ID"
         exit 1
         ;;
 esac
@@ -61,8 +149,15 @@ if ! command -v oscap &> /dev/null; then
     exit 1
 fi
 
-# Profile from env var or default to standard
-PROFILE="${PROFILE:-xccdf_org.ssgproject.content_profile_standard}"
+# Profile from env var or use OS-specific default
+if [ -n "$PROFILE" ]; then
+    # Use provided profile
+    :
+else
+    # Use default profile for this OS
+    PROFILE="xccdf_org.ssgproject.content_profile_${DEFAULT_PROFILE}"
+fi
+
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 
 # Output remediation start information
@@ -84,9 +179,9 @@ for RULE_SHORT in $RULE_ARGS; do
     
     echo "RULE_START:$RULE_SHORT"
     
-    # Attempt remediation
+    # Attempt remediation (requires root for system changes)
     # Note: Some rules require system changes that may need reboot
-    oscap xccdf eval \
+    sudo oscap xccdf eval \
         --profile "$PROFILE" \
         --remediate \
         --rule "$RULE_ID" \
@@ -99,7 +194,7 @@ for RULE_SHORT in $RULE_ARGS; do
         FIXED=$((FIXED + 1))
     else
         # Verify the rule by running a check
-        oscap xccdf eval \
+        sudo oscap xccdf eval \
             --profile "$PROFILE" \
             --rule "$RULE_ID" \
             --results "$TEMP_DIR/verify.xml" \

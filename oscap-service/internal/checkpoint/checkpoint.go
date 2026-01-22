@@ -1,6 +1,7 @@
 package checkpoint
 
 import (
+	"encoding/base64"
 	"fmt"
 	"strings"
 	"time"
@@ -44,7 +45,7 @@ func (m *Manager) CreateCheckpoint(name, description string, ruleIDs []string, s
 		Hostname:       m.NodeName,
 		Name:           name,
 		Description:    description,
-		CheckpointType: "pre_remediation",
+		CheckpointType: "auto", // 'auto' for system-created, 'manual' for user-created
 		IsActive:       true,
 		CreatedAt:      time.Now(),
 	}
@@ -187,50 +188,133 @@ func (m *Manager) getFilesForRules(ruleIDs []string) []string {
 	files := make(map[string]bool)
 
 	for _, rule := range ruleIDs {
+		ruleLower := strings.ToLower(rule)
+		
 		// SSH related rules
-		if strings.Contains(rule, "sshd") {
+		if strings.Contains(ruleLower, "sshd") || strings.Contains(ruleLower, "ssh_") {
 			files["/etc/ssh/sshd_config"] = true
 			files["/etc/ssh/sshd_config.d/50-cloud-init.conf"] = true
+			files["/etc/ssh/sshd_config.d/50-redhat.conf"] = true
+			files["/etc/ssh/ssh_config"] = true
 		}
 
-		// Sysctl rules
-		if strings.Contains(rule, "sysctl") {
+		// Sysctl rules (network, kernel settings)
+		if strings.Contains(ruleLower, "sysctl") || strings.Contains(ruleLower, "kernel") ||
+		   strings.Contains(ruleLower, "net_ipv4") || strings.Contains(ruleLower, "net_ipv6") {
 			files["/etc/sysctl.conf"] = true
 			files["/etc/sysctl.d/99-oscap.conf"] = true
+			files["/etc/sysctl.d/99-sysctl.conf"] = true
 		}
 
 		// Audit rules
-		if strings.Contains(rule, "audit") {
+		if strings.Contains(ruleLower, "audit") {
 			files["/etc/audit/auditd.conf"] = true
 			files["/etc/audit/rules.d/audit.rules"] = true
+			files["/etc/audit/rules.d/30-ospp-v42-1-create-failed.rules"] = true
+			files["/etc/audit/rules.d/30-ospp-v42-1-create-success.rules"] = true
 		}
 
-		// Logrotate
-		if strings.Contains(rule, "logrotate") {
+		// Logrotate and journald
+		if strings.Contains(ruleLower, "logrotate") || strings.Contains(ruleLower, "journald") {
 			files["/etc/logrotate.conf"] = true
-		}
-
-		// Service related
-		if strings.Contains(rule, "service_") {
-			// Services are handled via systemctl, no config file to backup
+			files["/etc/systemd/journald.conf"] = true
 		}
 
 		// PAM rules
-		if strings.Contains(rule, "pam") {
+		if strings.Contains(ruleLower, "pam") || strings.Contains(ruleLower, "faillock") {
 			files["/etc/pam.d/common-auth"] = true
 			files["/etc/pam.d/common-password"] = true
 			files["/etc/pam.d/system-auth"] = true
+			files["/etc/pam.d/password-auth"] = true
+			files["/etc/pam.d/su"] = true
+			files["/etc/security/faillock.conf"] = true
 		}
 
-		// Password rules
-		if strings.Contains(rule, "password") || strings.Contains(rule, "passwd") {
+		// Password and account rules
+		if strings.Contains(ruleLower, "password") || strings.Contains(ruleLower, "passwd") ||
+		   strings.Contains(ruleLower, "account") || strings.Contains(ruleLower, "login_defs") {
 			files["/etc/login.defs"] = true
 			files["/etc/security/pwquality.conf"] = true
+			files["/etc/default/useradd"] = true
 		}
 
 		// Grub/boot
-		if strings.Contains(rule, "grub") || strings.Contains(rule, "boot") {
+		if strings.Contains(ruleLower, "grub") || strings.Contains(ruleLower, "boot") {
 			files["/etc/default/grub"] = true
+			files["/boot/grub2/grub.cfg"] = true
+			files["/etc/grub.d/01_users"] = true
+		}
+
+		// Crypto policy
+		if strings.Contains(ruleLower, "crypto") {
+			files["/etc/crypto-policies/config"] = true
+		}
+
+		// Coredump
+		if strings.Contains(ruleLower, "coredump") {
+			files["/etc/systemd/coredump.conf"] = true
+		}
+
+		// Banners
+		if strings.Contains(ruleLower, "banner") || strings.Contains(ruleLower, "issue") {
+			files["/etc/issue"] = true
+			files["/etc/issue.net"] = true
+			files["/etc/motd"] = true
+		}
+
+		// AIDE (file integrity)
+		if strings.Contains(ruleLower, "aide") {
+			files["/etc/aide.conf"] = true
+		}
+
+		// Cron
+		if strings.Contains(ruleLower, "cron") {
+			files["/etc/crontab"] = true
+			files["/etc/cron.allow"] = true
+			files["/etc/cron.deny"] = true
+			files["/etc/anacrontab"] = true
+		}
+
+		// Sudo
+		if strings.Contains(ruleLower, "sudo") {
+			files["/etc/sudoers"] = true
+			files["/etc/sudoers.d/00-oscap"] = true
+		}
+
+		// UMASK
+		if strings.Contains(ruleLower, "umask") {
+			files["/etc/bashrc"] = true
+			files["/etc/profile"] = true
+			files["/etc/profile.d/oscap-umask.sh"] = true
+		}
+
+		// TMOUT (shell timeout)
+		if strings.Contains(ruleLower, "tmout") {
+			files["/etc/profile"] = true
+			files["/etc/profile.d/tmout.sh"] = true
+			files["/etc/bashrc"] = true
+		}
+
+		// Modprobe/kernel modules
+		if strings.Contains(ruleLower, "kernel_module") || strings.Contains(ruleLower, "modprobe") {
+			files["/etc/modprobe.d/blacklist.conf"] = true
+			files["/etc/modprobe.d/oscap-blacklist.conf"] = true
+		}
+
+		// Firewall
+		if strings.Contains(ruleLower, "firewalld") || strings.Contains(ruleLower, "nftables") ||
+		   strings.Contains(ruleLower, "iptables") {
+			files["/etc/firewalld/firewalld.conf"] = true
+		}
+
+		// SELinux
+		if strings.Contains(ruleLower, "selinux") {
+			files["/etc/selinux/config"] = true
+		}
+
+		// Mount options
+		if strings.Contains(ruleLower, "mount") {
+			files["/etc/fstab"] = true
 		}
 	}
 
@@ -289,6 +373,8 @@ func (m *Manager) RestoreCheckpoint(checkpointID int) error {
 	defer rows.Close()
 
 	var restoredCount, failedCount int
+	restoredFiles := []string{}
+	
 	for rows.Next() {
 		var filePath, content, permissions, owner string
 		if err := rows.Scan(&filePath, &content, &permissions, &owner); err != nil {
@@ -301,6 +387,7 @@ func (m *Manager) RestoreCheckpoint(checkpointID int) error {
 			failedCount++
 		} else {
 			restoredCount++
+			restoredFiles = append(restoredFiles, filePath)
 		}
 	}
 
@@ -309,6 +396,9 @@ func (m *Manager) RestoreCheckpoint(checkpointID int) error {
 	}
 
 	fmt.Printf("Restored %d files, %d failed\n", restoredCount, failedCount)
+	
+	// Reload services that may have been affected
+	m.reloadAffectedServices(restoredFiles)
 
 	// Deactivate the checkpoint after use
 	_, _ = database.DB.Exec(`UPDATE checkpoints SET is_active = false WHERE id = $1`, checkpointID)
@@ -316,20 +406,102 @@ func (m *Manager) RestoreCheckpoint(checkpointID int) error {
 	return nil
 }
 
+// reloadAffectedServices reloads services based on which config files were restored
+func (m *Manager) reloadAffectedServices(restoredFiles []string) {
+	servicesToReload := make(map[string]bool)
+	
+	for _, filePath := range restoredFiles {
+		// SSH config changes
+		if strings.Contains(filePath, "/etc/ssh/") {
+			servicesToReload["sshd"] = true
+		}
+		
+		// Sysctl changes
+		if strings.Contains(filePath, "sysctl") {
+			servicesToReload["sysctl-reload"] = true
+		}
+		
+		// Audit config changes
+		if strings.Contains(filePath, "/etc/audit/") {
+			servicesToReload["auditd"] = true
+		}
+		
+		// Journald changes
+		if strings.Contains(filePath, "journald") {
+			servicesToReload["systemd-journald"] = true
+		}
+		
+		// Firewalld changes
+		if strings.Contains(filePath, "firewalld") {
+			servicesToReload["firewalld"] = true
+		}
+	}
+	
+	// Reload each affected service
+	for service := range servicesToReload {
+		var cmd string
+		if service == "sysctl-reload" {
+			cmd = "sudo sysctl --system 2>/dev/null || true"
+		} else {
+			cmd = fmt.Sprintf("sudo systemctl reload %s 2>/dev/null || sudo systemctl restart %s 2>/dev/null || true", service, service)
+		}
+		
+		output, err := m.executeCommand(cmd)
+		if err != nil {
+			fmt.Printf("⚠️  Could not reload %s: %v\n", service, err)
+		} else {
+			if strings.TrimSpace(output) != "" {
+				fmt.Printf("   %s\n", strings.TrimSpace(output))
+			}
+			fmt.Printf("🔄 Reloaded: %s\n", service)
+		}
+	}
+}
+
 // restoreFile restores a single file from backup
 func (m *Manager) restoreFile(filePath, content, permissions, owner string) error {
-	// Create a temporary file and move it to the destination
+	// Use base64 encoding to safely transfer file content
+	// This avoids issues with special characters in heredocs
+	encoded := base64Encode(content)
+	
+	// Create script that decodes base64 and restores file
 	cmd := fmt.Sprintf(`
-		cat > /tmp/restore_file_$$ << 'RESTORE_EOF'
-%s
-RESTORE_EOF
-		sudo mv /tmp/restore_file_$$ "%s"
-		sudo chmod %s "%s" 2>/dev/null || true
-		sudo chown %s "%s" 2>/dev/null || true
-	`, content, filePath, permissions, filePath, owner, filePath)
+		ENCODED="%s"
+		DEST="%s"
+		PERMS="%s"
+		OWNER="%s"
+		
+		# Create temp file
+		TMPFILE=$(mktemp)
+		
+		# Decode base64 content to temp file
+		echo "$ENCODED" | base64 -d > "$TMPFILE" 2>/dev/null
+		
+		# Backup current file if exists
+		if [ -f "$DEST" ]; then
+			sudo cp "$DEST" "${DEST}.bak" 2>/dev/null || true
+		fi
+		
+		# Move temp file to destination
+		sudo mv "$TMPFILE" "$DEST"
+		
+		# Restore permissions and owner
+		sudo chmod "$PERMS" "$DEST" 2>/dev/null || true
+		sudo chown "$OWNER" "$DEST" 2>/dev/null || true
+		
+		echo "RESTORED: $DEST"
+	`, encoded, filePath, permissions, owner)
 
-	_, err := m.executeCommand(cmd)
-	return err
+	output, err := m.executeCommand(cmd)
+	if err != nil {
+		return fmt.Errorf("restore failed: %w (output: %s)", err, output)
+	}
+	return nil
+}
+
+// base64Encode encodes string to base64
+func base64Encode(s string) string {
+	return base64.StdEncoding.EncodeToString([]byte(s))
 }
 
 // DeleteCheckpoint marks a checkpoint as inactive

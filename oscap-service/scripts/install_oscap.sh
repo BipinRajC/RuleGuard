@@ -1,6 +1,6 @@
 #!/bin/bash
 # OpenSCAP Installation Script - HPC Cluster Deployment
-# Supported OS: RHEL/CentOS/Rocky/AlmaLinux (7-9), SLES (12-15), Ubuntu LTS (18.04-24.04)
+# Supported OS: RHEL/CentOS/Rocky/AlmaLinux (7-10), SLES (12-16), Ubuntu LTS (18.04-24.04)
 # Non-interactive, structured output for scaprun parsing
 # Optimized: Skips installation if already present
 
@@ -82,7 +82,7 @@ case "$OS_ID" in
                         exit 1
                     }
                     ;;
-                8|9)
+                8|9|10)
                     sudo dnf install -y -q openscap-scanner scap-security-guide || {
                         log_error "Failed to install OpenSCAP on RHEL $MAJOR_VERSION"
                         exit 1
@@ -110,8 +110,10 @@ case "$OS_ID" in
         else
             log_info "Installing OpenSCAP packages..."
             case "$MAJOR_VERSION" in
-                12|15)
-                    sudo zypper install -y -q --no-recommends openscap-utils scap-security-guide || {
+                12|15|16)
+                    # Note: -q flag not supported in newer zypper, use --quiet or omit
+                    sudo zypper install -y --no-recommends openscap-utils scap-security-guide 2>/dev/null || \
+                    sudo zypper install -y openscap-utils scap-security-guide || {
                         log_error "Failed to install OpenSCAP on SLES $MAJOR_VERSION"
                         exit 1
                     }

@@ -103,19 +103,21 @@ func (r *Remediator) RemediateRules(ruleIDs []string) (*models.Remediation, erro
 	completedAt := time.Now()
 
 	if err != nil {
-		// Mark remediation as failed
+		// Mark remediation as failed but include output for debugging
+		errMsg := fmt.Sprintf("%v\nScript output:\n%s", err, output)
 		_, updateErr := database.DB.Exec(`
 			UPDATE remediations 
 			SET status = 'failed', 
 				completed_at = $1,
-				error_message = $2
-			WHERE id = $3`,
-			completedAt, err.Error(), remediationID,
+				error_message = $2,
+				execution_output = $3
+			WHERE id = $4`,
+			completedAt, err.Error(), output, remediationID,
 		)
 		if updateErr != nil {
 			return nil, fmt.Errorf("remediation failed and couldn't update: %v, %v", err, updateErr)
 		}
-		return nil, fmt.Errorf("remediation execution failed: %w", err)
+		return nil, fmt.Errorf("remediation execution failed: %s", errMsg)
 	}
 
 	// Parse remediation output

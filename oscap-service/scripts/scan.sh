@@ -1,6 +1,6 @@
 #!/bin/bash
 # OpenSCAP Compliance Scan Script - HPC Cluster Deployment
-# Supported OS: RHEL/CentOS/Rocky/AlmaLinux (7-9), SLES (12-15), Ubuntu LTS (18.04-24.04)
+# Supported OS: RHEL/CentOS/Rocky/AlmaLinux (7-10), SLES (12-16), Ubuntu LTS (18.04-24.04)
 # Non-interactive, structured output for scaprun parsing
 
 set -e
@@ -41,10 +41,25 @@ case "$OS_ID" in
                 [ -z "$USER_PROFILE" ] && USER_PROFILE="cis_server_l1"
                 ;;
             9)
-                CONTENT="/usr/share/xml/scap/ssg/content/ssg-rhel9-ds.xml"
-                [ ! -f "$CONTENT" ] && CONTENT="/usr/share/xml/scap/ssg/content/ssg-centos9-ds.xml"
+                # For CentOS Stream 9, prefer cs9 content; for RHEL, prefer rhel9
+                if [ "$OS_ID" = "centos" ]; then
+                    CONTENT="/usr/share/xml/scap/ssg/content/ssg-cs9-ds.xml"
+                    [ ! -f "$CONTENT" ] && CONTENT="/usr/share/xml/scap/ssg/content/ssg-rhel9-ds.xml"
+                else
+                    CONTENT="/usr/share/xml/scap/ssg/content/ssg-rhel9-ds.xml"
+                    [ ! -f "$CONTENT" ] && CONTENT="/usr/share/xml/scap/ssg/content/ssg-cs9-ds.xml"
+                fi
                 [ ! -f "$CONTENT" ] && CONTENT="/usr/share/scap-security-guide/ssg-rhel9-ds.xml"
-                [ ! -f "$CONTENT" ] && CONTENT="/usr/share/scap-security-guide/ssg-centos9-ds.xml"
+                [ ! -f "$CONTENT" ] && CONTENT="/usr/share/scap-security-guide/ssg-cs9-ds.xml"
+                # Default profile if none specified
+                [ -z "$USER_PROFILE" ] && USER_PROFILE="cis_server_l1"
+                ;;
+            10)
+                # RHEL 10 - try rhel10 first, fallback to rhel9
+                CONTENT="/usr/share/xml/scap/ssg/content/ssg-rhel10-ds.xml"
+                [ ! -f "$CONTENT" ] && CONTENT="/usr/share/scap-security-guide/ssg-rhel10-ds.xml"
+                [ ! -f "$CONTENT" ] && CONTENT="/usr/share/xml/scap/ssg/content/ssg-rhel9-ds.xml"
+                [ ! -f "$CONTENT" ] && CONTENT="/usr/share/scap-security-guide/ssg-rhel9-ds.xml"
                 # Default profile if none specified
                 [ -z "$USER_PROFILE" ] && USER_PROFILE="cis_server_l1"
                 ;;
@@ -67,6 +82,15 @@ case "$OS_ID" in
                 ;;
             15)
                 CONTENT="/usr/share/xml/scap/ssg/content/ssg-sle15-ds.xml"
+                [ ! -f "$CONTENT" ] && CONTENT="/usr/share/scap-security-guide/ssg-sle15-ds.xml"
+                # Default profile if none specified
+                [ -z "$USER_PROFILE" ] && USER_PROFILE="standard"
+                ;;
+            16)
+                # SLES 16 - try sle16 first, fallback to sle15
+                CONTENT="/usr/share/xml/scap/ssg/content/ssg-sle16-ds.xml"
+                [ ! -f "$CONTENT" ] && CONTENT="/usr/share/scap-security-guide/ssg-sle16-ds.xml"
+                [ ! -f "$CONTENT" ] && CONTENT="/usr/share/xml/scap/ssg/content/ssg-sle15-ds.xml"
                 [ ! -f "$CONTENT" ] && CONTENT="/usr/share/scap-security-guide/ssg-sle15-ds.xml"
                 # Default profile if none specified
                 [ -z "$USER_PROFILE" ] && USER_PROFILE="standard"

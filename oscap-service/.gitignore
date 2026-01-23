@@ -8,3 +8,6 @@ oscap-service
 # Logs
 *.log
 logs/
+
+# ssh keys
+*.pem

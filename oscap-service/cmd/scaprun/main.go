@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"oscap-service/internal/config"
 	"oscap-service/internal/database"
 	"oscap-service/internal/remediation"
+	"oscap-service/internal/reports"
 	"oscap-service/internal/scanner"
 	sshpkg "oscap-service/pkg/ssh"
 	
@@ -56,10 +58,10 @@ func main() {
 		switch strings.ToLower(strings.TrimSpace(choice)) {
 		case "1", "target":
 			selectTarget()
-		case "2", "profile":
-			selectProfile()
-		case "3", "install":
+		case "2", "install":
 			installOpenSCAP()
+		case "3", "profile":
+			selectProfile()
 		case "4", "scan":
 			runScan()
 		case "5", "status", "view":
@@ -1049,9 +1051,430 @@ func reportsMenu() {
 		return
 	}
 	
-	PrintSection("Download Reports")
-	PrintWarning("Not yet implemented")
-	// TODO: Implement in Task 8
+	PrintSection("Generate HPE Compliance Reports")
+	
+	// Get available scans from database
+	rows, err := database.DB.Query(`
+		SELECT s.id, s.profile, s.compliance_score, 
+		       s.started_at, s.report_xml_path
+		FROM scans s
+		WHERE s.node_id = $1 AND s.status = 'completed'
+		ORDER BY s.started_at DESC
+		LIMIT 10
+	`, session.nodeID)
+	if err != nil {
+		PrintError(fmt.Sprintf("Failed to query scans: %v", err))
+		return
+	}
+	defer rows.Close()
+	
+	type scanOption struct {
+		ID       int
+		Profile  string
+		Score    float64
+		Time     time.Time
+		XMLPath  string
+	}
+	
+	var scans []scanOption
+	for rows.Next() {
+		var s scanOption
+		var scorePtr *float64
+		var xmlPathPtr *string
+		if err := rows.Scan(&s.ID, &s.Profile, &scorePtr, &s.Time, &xmlPathPtr); err != nil {
+			continue
+		}
+		if scorePtr != nil {
+			s.Score = *scorePtr
+		}
+		if xmlPathPtr != nil {
+			s.XMLPath = *xmlPathPtr
+		}
+		scans = append(scans, s)
+	}
+	
+	if len(scans) == 0 {
+		PrintWarning("No completed scans found.")
+		fmt.Println()
+		fmt.Print("  Would you like to generate a demo report? [y/N]: ")
+		
+		reader := bufio.NewReader(os.Stdin)
+		input, _ := reader.ReadString('\n')
+		input = strings.ToLower(strings.TrimSpace(input))
+		
+		if input == "y" || input == "yes" {
+			generateDemoReport()
+		}
+		return
+	}
+	
+	// Display available scans
+	fmt.Println()
+	PrintSuccess("Available Scans:")
+	fmt.Println()
+	
+	headers := []string{"#", "Scan ID", "Profile", "Score", "Date"}
+	var tableRows [][]string
+	for i, s := range scans {
+		scoreStr := fmt.Sprintf("%.0f%%", s.Score)
+		tableRows = append(tableRows, []string{
+			fmt.Sprintf("%d", i+1),
+			fmt.Sprintf("%d", s.ID),
+			s.Profile,
+			scoreStr,
+			s.Time.Format("2006-01-02 15:04"),
+		})
+	}
+	PrintStatusTable(headers, tableRows)
+	
+	fmt.Println()
+	fmt.Print("  Select scan number (or 'back' to cancel): ")
+	
+	reader := bufio.NewReader(os.Stdin)
+	input, _ := reader.ReadString('\n')
+	input = strings.TrimSpace(input)
+	
+	if input == "back" || input == "" {
+		return
+	}
+	
+	num, err := strconv.Atoi(input)
+	if err != nil || num < 1 || num > len(scans) {
+		PrintError("Invalid selection")
+		return
+	}
+	
+	selectedScan := scans[num-1]
+	
+	// Report format selection
+	fmt.Println()
+	PrintInfo("Report Format Options:")
+	fmt.Println("  [1] HTML Report (Interactive dashboard)")
+	fmt.Println("  [2] PDF Report (Printable document)")
+	fmt.Println("  [3] Both HTML and PDF")
+	fmt.Println()
+	fmt.Print("  Select format: ")
+	
+	formatInput, _ := reader.ReadString('\n')
+	formatInput = strings.TrimSpace(formatInput)
+	
+	generateHTML := formatInput == "1" || formatInput == "3"
+	generatePDF := formatInput == "2" || formatInput == "3"
+	
+	if !generateHTML && !generatePDF {
+		generateHTML = true // Default to HTML
+	}
+	
+	// Generate the report
+	PrintInfo("Generating HPE themed compliance report...")
+	
+	err = generateComplianceReport(selectedScan.ID, selectedScan.XMLPath, generateHTML, generatePDF)
+	if err != nil {
+		PrintError(fmt.Sprintf("Report generation failed: %v", err))
+		return
+	}
+}
+
+// generateComplianceReport creates HPE-themed HTML/PDF reports from scan data
+func generateComplianceReport(scanID int, xmlPath string, genHTML, genPDF bool) error {
+	// Get scan details from database
+	var profile string
+	var score float64
+	var startedAt time.Time
+	var completedAt *time.Time
+	var totalRules, passedRules, failedRules, errorRules *int
+	var reportXMLPath *string
+	
+	err := database.DB.QueryRow(`
+		SELECT profile, compliance_score, started_at, completed_at,
+		       total_rules, passed_rules, failed_rules, error_rules, report_xml_path
+		FROM scans WHERE id = $1
+	`, scanID).Scan(&profile, &score, &startedAt, &completedAt,
+		&totalRules, &passedRules, &failedRules, &errorRules, &reportXMLPath)
+	if err != nil {
+		return fmt.Errorf("failed to query scan: %w", err)
+	}
+	
+	// Try to fetch and parse actual XML results from target
+	var parsedReport *reports.ParsedReport
+	
+	if reportXMLPath != nil && *reportXMLPath != "" {
+		PrintInfo(fmt.Sprintf("Fetching XML report from target: %s", *reportXMLPath))
+		
+		// Fetch XML content from target
+		xmlContent, err := fetchXMLFromTarget(*reportXMLPath)
+		if err != nil {
+			PrintWarning(fmt.Sprintf("Could not fetch XML: %v - using database data", err))
+		} else {
+			// Parse the XML
+			parsedReport, err = reports.ParseXMLData([]byte(xmlContent))
+			if err != nil {
+				PrintWarning(fmt.Sprintf("Could not parse XML: %v - using database data", err))
+				parsedReport = nil
+			} else {
+				PrintSuccess("Successfully parsed OpenSCAP XML results")
+			}
+		}
+	}
+	
+	// If XML parsing failed, build from database
+	if parsedReport == nil {
+		parsedReport = &reports.ParsedReport{}
+	}
+	
+	// Enrich with session/database data
+	parsedReport.ScanID = scanID
+	parsedReport.NodeName = session.nodeName
+	parsedReport.NodeHost = session.targetHost
+	parsedReport.NodeOS = session.targetOS
+	parsedReport.ProfileID = profile
+	parsedReport.ProfileTitle = session.selectedProfileTitle
+	parsedReport.ScanTime = startedAt
+	
+	if completedAt != nil {
+		parsedReport.EndTime = *completedAt
+		parsedReport.Duration = completedAt.Sub(startedAt)
+	}
+	
+	// ALWAYS use database score (this is what user saw during scan)
+	// XML may calculate differently based on weightings
+	parsedReport.ScorePercent = score
+	parsedReport.ComplianceScore = score
+	parsedReport.MaxScore = 100
+	
+	// Use database rule counts (authoritative)
+	if totalRules != nil {
+		parsedReport.TotalRules = *totalRules
+	}
+	if passedRules != nil {
+		parsedReport.PassedRules = *passedRules
+	}
+	if failedRules != nil {
+		parsedReport.FailedRules = *failedRules
+	}
+	if errorRules != nil {
+		parsedReport.ErrorRules = *errorRules
+	}
+	
+	// Get historical scans for trend
+	histRows, err := database.DB.Query(`
+		SELECT compliance_score, started_at
+		FROM scans
+		WHERE node_id = $1 AND status = 'completed'
+		ORDER BY started_at DESC
+		LIMIT 10
+	`, session.nodeID)
+	if err == nil {
+		defer histRows.Close()
+		for histRows.Next() {
+			var histScore float64
+			var histTime time.Time
+			if err := histRows.Scan(&histScore, &histTime); err != nil {
+				continue
+			}
+			parsedReport.PreviousScans = append(parsedReport.PreviousScans, reports.HistoricalScan{
+				ScanTime: histTime,
+				Score:    histScore,
+			})
+		}
+	}
+	
+	// Calculate risk score if not already set
+	if parsedReport.RiskScore == 0 {
+		weightedScore := (parsedReport.CriticalCount * 40) + (parsedReport.HighCount * 20) + 
+		                 (parsedReport.MediumCount * 10) + (parsedReport.LowCount * 5)
+		parsedReport.RiskScore = weightedScore
+		if parsedReport.RiskScore > 100 {
+			parsedReport.RiskScore = 100
+		}
+		
+		switch {
+		case parsedReport.CriticalCount > 0 || parsedReport.RiskScore >= 80:
+			parsedReport.RiskLevel = "Critical"
+		case parsedReport.HighCount > 2 || parsedReport.RiskScore >= 50:
+			parsedReport.RiskLevel = "High"
+		case parsedReport.RiskScore >= 25:
+			parsedReport.RiskLevel = "Medium"
+		default:
+			parsedReport.RiskLevel = "Low"
+		}
+	}
+	
+	// Initialize report generator
+	generator, err := reports.NewReportGenerator()
+	if err != nil {
+		return fmt.Errorf("failed to initialize report generator: %w", err)
+	}
+	
+	// Determine output directory
+	outputDir := filepath.Join("/var/lib/scaprun/reports", session.nodeName)
+	if err := os.MkdirAll(outputDir, 0755); err != nil {
+		// Fallback to current directory
+		outputDir = "."
+	}
+	
+	// Generate reports
+	htmlPath, pdfPath, err := generator.GenerateReport(parsedReport, outputDir, genPDF)
+	if err != nil {
+		// Check if it's just PDF that failed
+		if htmlPath != "" {
+			PrintSuccess(fmt.Sprintf("HTML Report generated: %s", htmlPath))
+			if genPDF {
+				PrintWarning(fmt.Sprintf("PDF generation failed: %v", err))
+				PrintInfo("Install wkhtmltopdf for PDF support: sudo apt install wkhtmltopdf")
+			}
+			return nil
+		}
+		return err
+	}
+	
+	// Success output
+	fmt.Println()
+	PrintSection("Report Generated Successfully")
+	
+	if genHTML && htmlPath != "" {
+		PrintSuccess(fmt.Sprintf("HTML Report: %s", htmlPath))
+		PrintInfo("Open in browser: xdg-open " + htmlPath)
+	}
+	
+	if genPDF && pdfPath != "" {
+		PrintSuccess(fmt.Sprintf("PDF Report: %s", pdfPath))
+	}
+	
+	// Print summary
+	fmt.Println()
+	headers := []string{"Metric", "Value"}
+	tableRows := [][]string{
+		{"Compliance Score", fmt.Sprintf("%.0f%%", parsedReport.ScorePercent)},
+		{"Risk Level", parsedReport.RiskLevel},
+		{"Total Rules", fmt.Sprintf("%d", parsedReport.TotalRules)},
+		{"Failed Rules", fmt.Sprintf("%d", parsedReport.FailedRules)},
+	}
+	PrintStatusTable(headers, tableRows)
+	
+	return nil
+}
+
+// generateDemoReport creates a demo report with sample data
+func generateDemoReport() {
+	PrintInfo("Generating demo HPE compliance report...")
+	
+	// Create sample report data
+	demoReport := &reports.ParsedReport{
+		ScanID:          9999,
+		NodeName:        session.nodeName,
+		NodeHost:        session.targetHost,
+		NodeOS:          session.targetOS,
+		ProfileID:       "xccdf_org.ssgproject.content_profile_cis_server_l1",
+		ProfileTitle:    "CIS Server Level 1",
+		ScanTime:        time.Now().Add(-2 * time.Hour),
+		EndTime:         time.Now().Add(-1*time.Hour - 45*time.Minute),
+		Duration:        15 * time.Minute,
+		ComplianceScore: 73.5,
+		MaxScore:        100,
+		ScorePercent:    73.5,
+		TotalRules:      156,
+		PassedRules:     115,
+		FailedRules:     32,
+		ErrorRules:      3,
+		NotApplicable:   6,
+		RiskScore:       45,
+		RiskLevel:       "Medium",
+		CriticalCount:   2,
+		HighCount:       8,
+		MediumCount:     15,
+		LowCount:        7,
+		FailedRuleDetails: []reports.RuleDetail{
+			{RuleID: "xccdf_org.ssgproject.content_rule_sshd_disable_root_login", Title: "SSH Disable Root Login", Severity: "critical", Result: "fail", Description: "Ensure SSH root login is disabled"},
+			{RuleID: "xccdf_org.ssgproject.content_rule_accounts_password_pam_minlen", Title: "Accounts Password Pam Minlen", Severity: "critical", Result: "fail", Description: "Configure minimum password length"},
+			{RuleID: "xccdf_org.ssgproject.content_rule_audit_rules_privileged_commands", Title: "Audit Rules Privileged Commands", Severity: "high", Result: "fail", Description: "Configure audit rules for privileged commands"},
+			{RuleID: "xccdf_org.ssgproject.content_rule_file_permissions_etc_passwd", Title: "File Permissions Etc Passwd", Severity: "high", Result: "fail", Description: "Ensure correct permissions on /etc/passwd"},
+			{RuleID: "xccdf_org.ssgproject.content_rule_selinux_state", Title: "Selinux State", Severity: "high", Result: "fail", Description: "Configure SELinux state"},
+			{RuleID: "xccdf_org.ssgproject.content_rule_firewalld_enable", Title: "Firewalld Enable", Severity: "medium", Result: "fail", Description: "Enable and configure firewalld"},
+			{RuleID: "xccdf_org.ssgproject.content_rule_chronyd_configure", Title: "Chronyd Configure", Severity: "medium", Result: "fail", Description: "Configure time synchronization with chrony"},
+			{RuleID: "xccdf_org.ssgproject.content_rule_service_auditd_enabled", Title: "Service Auditd Enabled", Severity: "low", Result: "fail", Description: "Enable audit daemon service"},
+		},
+		PreviousScans: []reports.HistoricalScan{
+			{ScanTime: time.Now().Add(-2 * time.Hour), Score: 73.5},
+			{ScanTime: time.Now().Add(-26 * time.Hour), Score: 68.2},
+			{ScanTime: time.Now().Add(-50 * time.Hour), Score: 71.0},
+			{ScanTime: time.Now().Add(-74 * time.Hour), Score: 65.5},
+			{ScanTime: time.Now().Add(-98 * time.Hour), Score: 62.8},
+		},
+	}
+	
+	// Initialize report generator
+	generator, err := reports.NewReportGenerator()
+	if err != nil {
+		PrintError(fmt.Sprintf("Failed to initialize report generator: %v", err))
+		return
+	}
+	
+	// Determine output directory
+	outputDir := "."
+	
+	// Generate reports
+	htmlPath, pdfPath, err := generator.GenerateReport(demoReport, outputDir, false)
+	if err != nil {
+		PrintError(fmt.Sprintf("Report generation failed: %v", err))
+		return
+	}
+	
+	// Success output
+	fmt.Println()
+	PrintSection("Demo Report Generated Successfully")
+	
+	if htmlPath != "" {
+		PrintSuccess(fmt.Sprintf("HTML Report: %s", htmlPath))
+		PrintInfo("Open in browser: xdg-open " + htmlPath)
+	}
+	
+	if pdfPath != "" {
+		PrintSuccess(fmt.Sprintf("PDF Report: %s", pdfPath))
+	}
+	
+	// Print summary
+	fmt.Println()
+	headers := []string{"Metric", "Value"}
+	tableRows := [][]string{
+		{"Compliance Score", fmt.Sprintf("%.1f%%", demoReport.ScorePercent)},
+		{"Risk Level", demoReport.RiskLevel},
+		{"Total Rules", fmt.Sprintf("%d", demoReport.TotalRules)},
+		{"Failed Rules", fmt.Sprintf("%d", demoReport.FailedRules)},
+		{"Critical Issues", fmt.Sprintf("%d", demoReport.CriticalCount)},
+		{"High Issues", fmt.Sprintf("%d", demoReport.HighCount)},
+	}
+	PrintStatusTable(headers, tableRows)
+}
+
+// fetchXMLFromTarget retrieves XML report content from target system
+func fetchXMLFromTarget(xmlPath string) (string, error) {
+	if session.targetMode == "local" {
+		// Read local file
+		data, err := os.ReadFile(xmlPath)
+		if err != nil {
+			return "", fmt.Errorf("failed to read local XML: %w", err)
+		}
+		return string(data), nil
+	}
+	
+	// Remote: use SSH to cat the file
+	if session.sshClient == nil {
+		return "", fmt.Errorf("SSH client not initialized")
+	}
+	
+	// Check if file exists and read it
+	cmd := fmt.Sprintf("cat '%s' 2>/dev/null", xmlPath)
+	stdout, stderr, err := session.sshClient.ExecuteCommand(cmd)
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch remote XML: %w (stderr: %s)", err, stderr)
+	}
+	
+	if stdout == "" {
+		return "", fmt.Errorf("XML file is empty or not found")
+	}
+	
+	return stdout, nil
 }
 
 // cleanup closes connections and cleans up resources
